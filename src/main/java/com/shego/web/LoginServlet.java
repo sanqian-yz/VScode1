@@ -1,3 +1,72 @@
 package com.shego.web;
-import com.shego.util.DBUtil; import java.io.*; import java.nio.charset.StandardCharsets; import java.security.*; import java.sql.*; import java.util.*; import javax.servlet.*; import javax.servlet.annotation.WebServlet; import javax.servlet.http.*;
-@WebServlet("/login") public class LoginServlet extends HttpServlet { protected void doGet(HttpServletRequest q,HttpServletResponse p)throws ServletException,IOException{q.getRequestDispatcher("/WEB-INF/views/login.jsp").forward(q,p);} protected void doPost(HttpServletRequest q,HttpServletResponse p)throws ServletException,IOException{String u=q.getParameter("username"),pw=q.getParameter("password"); String sql="SELECT id,username,role FROM users WHERE username=? AND password_hash=?"; try(Connection c=DBUtil.getConnection();PreparedStatement s=c.prepareStatement(sql)){s.setString(1,u);s.setString(2(hash(pw,"")));try(ResultSet r=s.executeQuery()){if(r.next()){HttpSession session=q.getSession();session.setAttribute("userId",r.getInt("id"));session.setAttribute("username",r.getString("username"));session.setAttribute("role",r.getString("role"));p.sendRedirect(q.getContextPath()+"/products");return;}} q.setAttribute("error","用户名或密码错误");q.getRequestDispatcher("/WEB-INF/views/login.jsp").forward(q,p);}catch(Exception e){throw new ServletException("登录失败",e);}} private String hash(String value,String salt)throws Exception{MessageDigest md=MessageDigest.getInstance("SHA-256");byte[] b=md.digest((salt+value).getBytes(StandardCharsets.UTF_8));StringBuilder x=new StringBuilder();for(byte v:b)x.append(String.format("%02x",v));return x.toString();}}
+
+import com.shego.dao.UserDao;
+import com.shego.model.User;
+import com.shego.util.PasswordUtil;
+import com.shego.util.WebUtil;
+
+import javax.servlet.ServletException;
+import javax.servlet.annotation.WebServlet;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
+import java.io.IOException;
+import java.sql.SQLException;
+
+@WebServlet("/login")
+public class LoginServlet extends HttpServlet {
+    private final UserDao userDao = new UserDao();
+
+    @Override
+    protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+        request.setAttribute("csrfToken", WebUtil.ensureCsrfToken(request));
+        request.getRequestDispatcher("/WEB-INF/views/login.jsp").forward(request, response);
+    }
+
+    @Override
+    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+        if (!WebUtil.validateCsrf(request)) {
+            request.setAttribute("error", "请求已失效，请刷新后重试");
+            doGet(request, response);
+            return;
+        }
+
+        String username = request.getParameter("username");
+        String password = request.getParameter("password");
+        if (isBlank(username) || isBlank(password)) {
+            request.setAttribute("error", "用户名和密码不能为空");
+            doGet(request, response);
+            return;
+        }
+
+        try {
+            User user = userDao.findByUsername(username.trim());
+            if (user == null || !PasswordUtil.matches(password, user.getSalt(), user.getPasswordHash())) {
+                request.setAttribute("error", "用户名或密码错误");
+                doGet(request, response);
+                return;
+            }
+
+            HttpSession oldSession = request.getSession(false);
+            if (oldSession != null) {
+                oldSession.invalidate();
+            }
+            HttpSession session = request.getSession(true);
+            User safeUser = new User();
+            safeUser.setId(user.getId());
+            safeUser.setUsername(user.getUsername());
+            safeUser.setPhone(user.getPhone());
+            safeUser.setRole(user.getRole());
+            session.setAttribute(WebUtil.SESSION_USER, safeUser);
+
+            response.sendRedirect(request.getContextPath() + "/products");
+        } catch (SQLException e) {
+            throw new ServletException("登录失败", e);
+        }
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+}
